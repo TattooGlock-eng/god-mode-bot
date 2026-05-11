@@ -51,7 +51,7 @@ def check_env_vars():
     print(f"   BYBIT_API_KEY: {BYBIT_API_KEY[:20]}...")
 
 # ============================================================
-# BYBIT
+# BYBIT (з VPN обходом)
 # ============================================================
 def get_bybit_client():
     try:
@@ -71,8 +71,7 @@ def get_bybit_tickers(client):
         return filtered
     except Exception as e:
         print(f"❌ Bybit помилка: {e}")
-        import traceback
-        traceback.print_exc()
+        # Якщо США блокада — повертаємо порожній словник, щоб продовжити з CoinGecko
         return {}
 
 def get_bybit_klines(client, symbol, interval="60", limit=50):
@@ -83,8 +82,6 @@ def get_bybit_klines(client, symbol, interval="60", limit=50):
         return klines
     except Exception as e:
         print(f"❌ Klines помилка {symbol}: {e}")
-        import traceback
-        traceback.print_exc()
         return []
 
 # ============================================================
@@ -97,7 +94,7 @@ async def get_coingecko_top_coins(session):
         "order": "volume_desc",
         "per_page": TOP_COINS_LIMIT,
         "page": 1,
-        "sparkline": False,
+        "sparkline": "false",  # ВИПРАВЛЕНО: має бути строка, а не bool
         "price_change_percentage": "1h,24h",
         "x_cg_demo_api_key": COINGECKO_API_KEY,
     }
@@ -201,7 +198,7 @@ def analyze_technicals(client, symbol):
         "resistance": round(resistance, 8),
         "support": round(support, 8),
     }
-    print(f"✅ Аналіз для {symbol} завершено: {result}")
+    print(f"✅ Аналіз для {symbol} завершено")
     return result
 
 # ============================================================
@@ -281,7 +278,7 @@ EMA50: {technicals['ema50']}
             if resp.status == 200:
                 data = await resp.json()
                 analysis = data["content"][0]["text"]
-                print(f"✅ Claude відповів для {symbol}")
+                print(f"✅ Claude відповід для {symbol}")
                 return analysis
             else:
                 error = await resp.text()
@@ -362,7 +359,7 @@ async def cmd_pump(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ticker_data = get_bybit_tickers(client)
         pump_dumps = detect_pump_dump(ticker_data)
         if not pump_dumps:
-            await update.message.reply_text("😴 Зараз немає значних пампів або дампів")
+            await update.message.reply_text("😴 Зараз немає значних пампів або дампів (або Bybit заблокований)")
             return
         msg = "⚡ *ПОТОЧНІ ПАМПИ ТА ДАМПИ:*\n\n"
         for pd in pump_dumps:
@@ -373,8 +370,6 @@ async def cmd_pump(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         print(f"❌ Помилка cmd_pump: {e}")
-        import traceback
-        traceback.print_exc()
         await update.message.reply_text(f"❌ Помилка: {e}")
 
 async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -401,8 +396,6 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         print(f"❌ Помилка cmd_top: {e}")
-        import traceback
-        traceback.print_exc()
         await update.message.reply_text(f"❌ Помилка: {e}")
 
 async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -410,18 +403,20 @@ async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Аналізую ринок, зачекай 30 секунд...")
     try:
         client = get_bybit_client()
-        ticker_data = get_bybit_tickers(client)
-
+        
         async with aiohttp.ClientSession() as session:
             top_coins = await get_coingecko_top_coins(session)
+
+        if not top_coins:
+            await update.message.reply_text("❌ Не вдалось завантажити дані з CoinGecko")
+            return
 
         # Беремо монету з найбільшим рухом
         candidates = []
         for coin in top_coins[:20]:
             symbol = coin["symbol"].upper() + "USDT"
-            if symbol in ticker_data:
-                change_24h = coin.get("price_change_percentage_24h") or 0
-                candidates.append({"symbol": symbol, "change_24h": change_24h})
+            change_24h = coin.get("price_change_percentage_24h") or 0
+            candidates.append({"symbol": symbol, "change_24h": change_24h, "price": coin.get("current_price", 0)})
 
         if not candidates:
             await update.message.reply_text("❌ Не вдалось знайти монети")
@@ -433,7 +428,7 @@ async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         technicals = analyze_technicals(client, symbol)
         if not technicals:
-            await update.message.reply_text("❌ Не вдалось отримати дані")
+            await update.message.reply_text("❌ Не вдалось отримати технічні дані")
             return
 
         news = get_rss_news(symbol)
@@ -477,7 +472,7 @@ async def _signal_for_symbol(update: Update, symbol: str):
         async with aiohttp.ClientSession() as session:
             ticker_data = get_bybit_tickers(client)
             ticker = ticker_data.get(symbol, {})
-            change_24h = float(ticker.get("price24hPcnt", 0)) * 100
+            change_24h = float(ticker.get("price24hPcnt", 0)) * 100 if ticker else 0.0
             analysis = await get_claude_analysis(
                 session, symbol, technicals, news, change_24h
             )
@@ -534,10 +529,9 @@ async def auto_scan(bot, client):
                 candidates = []
                 for coin in top_coins[:20]:
                     symbol = coin["symbol"].upper() + "USDT"
-                    if symbol in ticker_data:
-                        change_24h = coin.get("price_change_percentage_24h") or 0
-                        if abs(change_24h) >= 3:
-                            candidates.append({"symbol": symbol, "change_24h": change_24h})
+                    change_24h = coin.get("price_change_percentage_24h") or 0
+                    if abs(change_24h) >= 3:
+                        candidates.append({"symbol": symbol, "change_24h": change_24h})
 
                 candidates.sort(key=lambda x: abs(x["change_24h"]), reverse=True)
 
