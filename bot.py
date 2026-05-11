@@ -43,6 +43,10 @@ def check_env_vars():
     print(f"   TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:20]}...")
     print(f"   ANTHROPIC_API_KEY: {ANTHROPIC_API_KEY[:20]}...")
     print(f"   COINGECKO_API_KEY: {COINGECKO_API_KEY[:20]}...")
+    
+    # Перевірка валідності Claude API ключа
+    if not ANTHROPIC_API_KEY.startswith("sk-ant-"):
+        print("⚠️  Попередження: ANTHROPIC_API_KEY може бути невалідним!")
 
 # ============================================================
 # COINGECKO
@@ -199,13 +203,17 @@ EMA50: {technicals['ema50']}
 
     try:
         print(f"🤖 Надсилаю запит до Claude для {symbol}...")
+        print(f"   API Key перевірка: {ANTHROPIC_API_KEY[:30]}...")
+        
+        headers = {
+            "x-api-key": ANTHROPIC_API_KEY.strip(),
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        
         async with session.post(
             "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
+            headers=headers,
             json={
                 "model": "claude-sonnet-4-20250514",
                 "max_tokens": 600,
@@ -220,8 +228,10 @@ EMA50: {technicals['ema50']}
                 print(f"✅ Claude відповід для {symbol}")
                 return analysis
             else:
-                error = await resp.text()
-                print(f"❌ Claude помилка {resp.status}: {error}")
+                error_text = await resp.text()
+                print(f"❌ Claude помилка {resp.status}: {error_text}")
+                if resp.status == 401:
+                    print("⚠️  АВТОРИЗАЦІЯ ПОМИЛКА: Перевір ANTHROPIC_API_KEY на Railway!")
     except Exception as e:
         print(f"❌ Claude помилка: {e}")
         import traceback
@@ -495,20 +505,23 @@ async def main():
         print("🚀 Бот запущено!")
 
         # Відправити стартове повідомлення
-        await app.bot.send_message(
-            chat_id=TELEGRAM_CHAT_ID,
-            text=(
-                "🤖 *GOD MODE TRADING BOT запущено!*\n\n"
-                "Доступні команди:\n"
-                "📊 /signal — сигнал на вимогу\n"
-                "🏆 /top — топ 5 монет\n"
-                "📈 /btc — сигнал по BTC\n"
-                "📈 /eth — сигнал по ETH\n"
-                "❓ /status — статус бота\n\n"
-                "Автоматичні сигнали кожні 5 хвилин! 🚀"
-            ),
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        try:
+            await app.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=(
+                    "🤖 *GOD MODE TRADING BOT запущено!*\n\n"
+                    "Доступні команди:\n"
+                    "📊 /signal — сигнал на вимогу\n"
+                    "🏆 /top — топ 5 монет\n"
+                    "📈 /btc — сигнал по BTC\n"
+                    "📈 /eth — сигнал по ETH\n"
+                    "❓ /status — статус бота\n\n"
+                    "Автоматичні сигнали кожні 5 хвилин! 🚀"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            print(f"⚠️  Помилка при надсиланні стартового повідомлення: {e}")
 
         # Запускаємо авто-сканування паралельно
         asyncio.create_task(auto_scan(app.bot))
@@ -516,7 +529,7 @@ async def main():
         # Запускаємо polling для команд
         await app.initialize()
         await app.start()
-        await app.updater.start_polling()
+        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
 
         # Тримаємо бота живим
         while True:
