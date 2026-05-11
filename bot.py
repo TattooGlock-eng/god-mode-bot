@@ -41,30 +41,50 @@ def check_env_vars():
     }
     missing = [k for k, v in required.items() if not v]
     if missing:
-        raise ValueError(f"❌ Відсутні змінні середовища: {', '.join(missing)}")
+        error_msg = f"❌ Відсутні змінні середовища: {', '.join(missing)}"
+        print(error_msg)
+        raise ValueError(error_msg)
     print("✅ Всі змінні середовища завантажено")
+    print(f"   TELEGRAM_TOKEN: {TELEGRAM_TOKEN[:20]}...")
+    print(f"   ANTHROPIC_API_KEY: {ANTHROPIC_API_KEY[:20]}...")
+    print(f"   COINGECKO_API_KEY: {COINGECKO_API_KEY[:20]}...")
+    print(f"   BYBIT_API_KEY: {BYBIT_API_KEY[:20]}...")
 
 # ============================================================
 # BYBIT
 # ============================================================
 def get_bybit_client():
-    return HTTP(testnet=False, api_key=BYBIT_API_KEY, api_secret=BYBIT_SECRET)
+    try:
+        client = HTTP(testnet=False, api_key=BYBIT_API_KEY, api_secret=BYBIT_SECRET)
+        print("✅ Bybit клієнт ініціалізовано")
+        return client
+    except Exception as e:
+        print(f"❌ Помилка ініціалізації Bybit: {e}")
+        raise
 
 def get_bybit_tickers(client):
     try:
         result = client.get_tickers(category="linear")
         tickers = result.get("result", {}).get("list", [])
-        return {t["symbol"]: t for t in tickers if t["symbol"].endswith("USDT")}
+        filtered = {t["symbol"]: t for t in tickers if t["symbol"].endswith("USDT")}
+        print(f"✅ Отримано {len(filtered)} тікерів з Bybit")
+        return filtered
     except Exception as e:
-        print(f"Bybit помилка: {e}")
+        print(f"❌ Bybit помилка: {e}")
+        import traceback
+        traceback.print_exc()
         return {}
 
 def get_bybit_klines(client, symbol, interval="60", limit=50):
     try:
         result = client.get_kline(category="linear", symbol=symbol, interval=interval, limit=limit)
-        return result.get("result", {}).get("list", [])
+        klines = result.get("result", {}).get("list", [])
+        print(f"✅ Отримано {len(klines)} klines для {symbol}")
+        return klines
     except Exception as e:
-        print(f"Klines помилка {symbol}: {e}")
+        print(f"❌ Klines помилка {symbol}: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 # ============================================================
@@ -82,11 +102,20 @@ async def get_coingecko_top_coins(session):
         "x_cg_demo_api_key": COINGECKO_API_KEY,
     }
     try:
+        print(f"🔍 Запит до CoinGecko з API ключем...")
         async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            print(f"   Status: {resp.status}")
             if resp.status == 200:
-                return await resp.json()
+                data = await resp.json()
+                print(f"✅ Отримано {len(data)} монет з CoinGecko")
+                return data
+            else:
+                error_text = await resp.text()
+                print(f"❌ CoinGecko помилка {resp.status}: {error_text}")
     except Exception as e:
-        print(f"CoinGecko помилка: {e}")
+        print(f"❌ CoinGecko помилка: {e}")
+        import traceback
+        traceback.print_exc()
     return []
 
 # ============================================================
@@ -136,8 +165,10 @@ def calculate_ema(prices, period):
     return round(ema, 8)
 
 def analyze_technicals(client, symbol):
+    print(f"📊 Аналізую технічні показники для {symbol}...")
     klines = get_bybit_klines(client, symbol)
     if len(klines) < 20:
+        print(f"❌ Недостатньо klines для {symbol}: {len(klines)}")
         return None
     klines_sorted = list(reversed(klines))
     closes = [float(k[4]) for k in klines_sorted]
@@ -160,7 +191,7 @@ def analyze_technicals(client, symbol):
     recent_lows = sorted(lows[-20:])
     resistance = recent_highs[min(2, len(recent_highs) - 1)]
     support = recent_lows[min(2, len(recent_lows) - 1)]
-    return {
+    result = {
         "current_price": current_price,
         "rsi": rsi,
         "ema20": ema20,
@@ -170,6 +201,8 @@ def analyze_technicals(client, symbol):
         "resistance": round(resistance, 8),
         "support": round(support, 8),
     }
+    print(f"✅ Аналіз для {symbol} завершено: {result}")
+    return result
 
 # ============================================================
 # ПАМП/ДАМП
@@ -192,6 +225,7 @@ def detect_pump_dump(ticker_data):
         except Exception:
             continue
     signals.sort(key=lambda x: abs(x["change_24h"]), reverse=True)
+    print(f"✅ Виявлено {len(signals)} памп/дамп сигналів")
     return signals[:5]
 
 # ============================================================
@@ -228,6 +262,7 @@ EMA50: {technicals['ema50']}
 РИЗИК: [НИЗЬКИЙ / СЕРЕДНІЙ / ВИСОКИЙ]"""
 
     try:
+        print(f"🤖 Надсилаю запит до Claude для {symbol}...")
         async with session.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -242,14 +277,19 @@ EMA50: {technicals['ema50']}
             },
             timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
+            print(f"   Claude status: {resp.status}")
             if resp.status == 200:
                 data = await resp.json()
-                return data["content"][0]["text"]
+                analysis = data["content"][0]["text"]
+                print(f"✅ Claude відповів для {symbol}")
+                return analysis
             else:
                 error = await resp.text()
-                print(f"Claude помилка {resp.status}: {error}")
+                print(f"❌ Claude помилка {resp.status}: {error}")
     except Exception as e:
-        print(f"Claude помилка: {e}")
+        print(f"❌ Claude помилка: {e}")
+        import traceback
+        traceback.print_exc()
     return None
 
 # ============================================================
@@ -332,6 +372,9 @@ async def cmd_pump(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"   Ціна: `${pd['price']}`\n\n"
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
+        print(f"❌ Помилка cmd_pump: {e}")
+        import traceback
+        traceback.print_exc()
         await update.message.reply_text(f"❌ Помилка: {e}")
 
 async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -357,6 +400,9 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"   Зміна: `{change:.2f}%`\n\n"
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
+        print(f"❌ Помилка cmd_top: {e}")
+        import traceback
+        traceback.print_exc()
         await update.message.reply_text(f"❌ Помилка: {e}")
 
 async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -405,6 +451,9 @@ async def cmd_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     except Exception as e:
+        print(f"❌ Помилка cmd_signal: {e}")
+        import traceback
+        traceback.print_exc()
         await update.message.reply_text(f"❌ Помилка: {e}")
 
 async def cmd_btc(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -433,11 +482,14 @@ async def _signal_for_symbol(update: Update, symbol: str):
                 session, symbol, technicals, news, change_24h
             )
         if not analysis:
-            await update.message.reply_text("❌ Claude AI не відповів")
+            await update.message.reply_text("❌ Claude AI не відповід")
             return
         msg = format_signal_message(symbol, technicals, analysis, news)
         await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
+        print(f"❌ Помилка _signal_for_symbol({symbol}): {e}")
+        import traceback
+        traceback.print_exc()
         await update.message.reply_text(f"❌ Помилка: {e}")
 
 # ============================================================
@@ -512,6 +564,8 @@ async def auto_scan(bot, client):
 
         except Exception as e:
             print(f"❌ Помилка авто-сканування: {e}")
+            import traceback
+            traceback.print_exc()
 
         await asyncio.sleep(SCAN_INTERVAL)
 
@@ -519,51 +573,57 @@ async def auto_scan(bot, client):
 # ЗАПУСК
 # ============================================================
 async def main():
-    check_env_vars()
+    try:
+        check_env_vars()
 
-    client = get_bybit_client()
+        client = get_bybit_client()
 
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+        app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Реєструємо команди
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("signal", cmd_signal))
-    app.add_handler(CommandHandler("pump", cmd_pump))
-    app.add_handler(CommandHandler("top", cmd_top))
-    app.add_handler(CommandHandler("btc", cmd_btc))
-    app.add_handler(CommandHandler("eth", cmd_eth))
+        # Реєструємо команди
+        app.add_handler(CommandHandler("start", cmd_start))
+        app.add_handler(CommandHandler("status", cmd_status))
+        app.add_handler(CommandHandler("signal", cmd_signal))
+        app.add_handler(CommandHandler("pump", cmd_pump))
+        app.add_handler(CommandHandler("top", cmd_top))
+        app.add_handler(CommandHandler("btc", cmd_btc))
+        app.add_handler(CommandHandler("eth", cmd_eth))
 
-    print("🚀 Бот запущено!")
+        print("🚀 Бот запущено!")
 
-    # Відправити стартове повідомлення
-    await app.bot.send_message(
-        chat_id=TELEGRAM_CHAT_ID,
-        text=(
-            "🤖 *GOD MODE TRADING BOT запущено!*\n\n"
-            "Доступні команди:\n"
-            "📊 /signal — сигнал на вимогу\n"
-            "🔥 /pump — пампи та дампи\n"
-            "🏆 /top — топ 5 монет\n"
-            "📈 /btc — сигнал по BTC\n"
-            "📈 /eth — сигнал по ETH\n"
-            "❓ /status — статус бота\n\n"
-            "Автоматичні сигнали кожні 5 хвилин! 🚀"
-        ),
-        parse_mode=ParseMode.MARKDOWN,
-    )
+        # Відправити стартове повідомлення
+        await app.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text=(
+                "🤖 *GOD MODE TRADING BOT запущено!*\n\n"
+                "Доступні команди:\n"
+                "📊 /signal — сигнал на вимогу\n"
+                "🔥 /pump — пампи та дампи\n"
+                "🏆 /top — топ 5 монет\n"
+                "📈 /btc — сигнал по BTC\n"
+                "📈 /eth — сигнал по ETH\n"
+                "❓ /status — статус бота\n\n"
+                "Автоматичні сигнали кожні 5 хвилин! 🚀"
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+        )
 
-    # Запускаємо авто-сканування паралельно
-    asyncio.create_task(auto_scan(app.bot, client))
+        # Запускаємо авто-сканування паралельно
+        asyncio.create_task(auto_scan(app.bot, client))
 
-    # Запускаємо polling для команд
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
+        # Запускаємо polling для команд
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
 
-    # Тримаємо бота живим
-    while True:
-        await asyncio.sleep(60)
+        # Тримаємо бота живим
+        while True:
+            await asyncio.sleep(60)
+    except Exception as e:
+        print(f"❌ КРИТИЧНА ПОМИЛКА: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 if __name__ == "__main__":
     asyncio.run(main())
